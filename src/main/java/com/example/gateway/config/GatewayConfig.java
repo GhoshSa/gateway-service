@@ -13,6 +13,8 @@ import lombok.Data;
 @ConfigurationProperties(prefix = "gateway")
 public class GatewayConfig {
     private List<ServiceConfig> services;
+    private HealthCheckConfig healthCheck = new HealthCheckConfig();
+    private PredictionConfig prediction = new PredictionConfig();
 
     @Data
     public static class ServiceConfig {
