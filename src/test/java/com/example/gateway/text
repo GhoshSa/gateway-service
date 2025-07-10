@@ -1,0 +1,221 @@
+package com.example.gateway;
+
+import com.example.gateway.config.GatewayConfig;
+import com.example.gateway.health.HealthMonitor; // Assuming these are still part of your app
+import com.example.gateway.prediction.FailurePredictionEngine; // Assuming these are still part of your app
+import com.example.gateway.scheduler.HealthCheckScheduler; // Assuming these are still part of your app
+import com.example.gateway.routing.SelfHealingRouteManager; // Assuming this package
+
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext; // For verifying context itself
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import org.awaitility.Awaitility;
+import org.awaitility.Durations;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest(webEnvironment = SpringTest.WebEnvironment.RANDOM_PORT) // Must specify webEnvironment for WebTestClient
+@ActiveProfiles("test") // Activates application-test.properties
+class GatewayServiceApplicationTests {
+
+    // --- Autowired Components for Context Verification & Testing ---
+    @Autowired
+    private ApplicationContext applicationContext;
+
+    @Autowired
+    private WebTestClient webTestClient;
+
+    @Autowired
+    private GatewayConfig gatewayConfig;
+
+    @Autowired
+    private HealthMonitor healthMonitor; // Assuming this bean exists
+    @Autowired
+    private FailurePredictionEngine predictionEngine; // Assuming this bean exists
+    @Autowired
+    private HealthCheckScheduler healthCheckScheduler; // Assuming this bean exists
+
+    @Autowired(required = false)
+    private SelfHealingRouteManager selfHealingRouteManager;
+
+    private MockWebServer mockService; // Simulates an upstream microservice
+
+    // --- Setup and Teardown for MockWebServer ---
+    @BeforeEach
+    void setUp() throws IOException {
+        mockService = new MockWebServer();
+        mockService.start();
+    }
+
+    @AfterEach
+    void tearDown() throws IOException {
+        mockService.shutdown();
+    }
+
+    // Helper method to get the URL of the mock service
+    private String getMockServiceUrl() {
+        return "http://localhost:" + mockService.getPort();
+    }
+
+    // --- Tests ---
+
+    /**
+     * Test: Spring application context loads successfully and essential beans are present.
+     */
+    @Test
+    void contextLoadsAndBeansArePresent() { // Renamed for clarity
+        assertThat(applicationContext).isNotNull();
+        assertThat(webTestClient).isNotNull();
+        assertThat(gatewayConfig).isNotNull();
+        assertThat(healthMonitor).isNotNull();
+        assertThat(predictionEngine).isNotNull();
+        assertThat(healthCheckScheduler).isNotNull();
+        assertThat(selfHealingRouteManager).isNotNull();
+
+        System.out.println("Spring application context loaded successfully and essential beans are present!");
+    }
+
+    /**
+     * Test: Basic routing to a healthy upstream service works.
+     * Simulates a regular request being forwarded to a healthy microservice.
+     */
+    @Test
+    void testSuccessfulRouting() {
+        mockService.enqueue(new MockResponse().setBody("Hello from upstream!").setResponseCode(200));
+        configureGatewayServiceRoute("test-service-id", "/api/test/**", getMockServiceUrl(), "instance-1");
+
+        webTestClient.get().uri("/api/test")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class).isEqualTo("Hello from upstream!");
+    }
+
+    /**
+     * Test: Health check influence on dynamic routing.
+     * This test checks if the gateway marks an instance inactive when its health endpoint fails.
+     */
+    @Test
+    void testHealthCheckImpactOnRouting() {
+        String serviceId = "health-check-service";
+        String instanceId = "instance-hc-1";
+        String path = "/api/health/**";
+        String healthEndpoint = "/actuator/health";
+
+        configureGatewayServiceRoute(serviceId, path, getMockServiceUrl(), instanceId);
+
+        mockService.enqueue(new MockResponse().setBody("Initial Service OK").setResponseCode(200));
+        webTestClient.get().uri("/api/health")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class).isEqualTo("Initial Service OK");
+
+        mockService.enqueue(new MockResponse().setResponseCode(503)); // Health check failure 1
+        mockService.enqueue(new MockResponse().setResponseCode(503)); // Health check failure for retry
+        mockService.enqueue(new MockResponse().setBody("Should not be hit by active route").setResponseCode(200));
+
+        Awaitility.await()
+                .atMost(Durations.TEN_SECONDS)
+                .pollInterval(Durations.ONE_SECOND)
+                .untilAsserted(() -> {
+                    assertThat(selfHealingRouteManager).isNotNull();
+                    List<GatewayConfig.ServiceInstance> activeInstances =
+                            selfHealingRouteManager.getServiceActiveInstances(serviceId);
+
+                    GatewayConfig.ServiceInstance configuredInstance = gatewayConfig.getServices().stream()
+                            .filter(s -> s.getId().equals(serviceId))
+                            .flatMap(s -> s.getInstances().stream())
+                            .filter(i -> i.getId().equals(instanceId))
+                            .findFirst()
+                            .orElseThrow(() -> new AssertionError("Test instance not found in config"));
+
+                    assertThat(activeInstances).doesNotContain(configuredInstance);
+
+                    webTestClient.get().uri("/api/health")
+                            .exchange()
+                            .expectStatus().is5xxServerError();
+                });
+
+        try {
+            assertThat(mockService.takeRequest(5, TimeUnit.SECONDS).getPath()).isEqualTo(healthEndpoint);
+            assertThat(mockService.takeRequest(5, TimeUnit.SECONDS).getPath()).isEqualTo(healthEndpoint);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("MockWebServer request was not taken in time", e);
+        }
+    }
+
+
+    /**
+     * Helper method to dynamically configure a service route in GatewayConfig for testing.
+     * (Same as previous version)
+     */
+    private void configureGatewayServiceRoute(String serviceId, String path, String targetUrl, String instanceId) {
+        GatewayConfig.ServiceConfig serviceConfig = new GatewayConfig.ServiceConfig();
+        serviceConfig.setId(serviceId);
+        serviceConfig.setName(serviceId + "-name");
+        serviceConfig.setPath(path);
+        serviceConfig.setEnablePrediction(true);
+
+        GatewayConfig.ServiceInstance instance = new GatewayConfig.ServiceInstance();
+        instance.setId(instanceId);
+        instance.setUrl(targetUrl);
+        instance.setActive(true);
+        instance.setWeight(100);
+        instance.setEnvironment("test");
+
+        serviceConfig.setInstances(List.of(instance));
+
+        List<GatewayConfig.ServiceConfig> currentServices = gatewayConfig.getServices();
+        if (currentServices == null) {
+            currentServices = new java.util.ArrayList<>();
+        }
+
+        currentServices = currentServices.stream()
+                .filter(s -> !s.getId().equals(serviceId))
+                .collect(Collectors.toCollection(java.util.ArrayList::new));
+        currentServices.add(serviceConfig);
+        gatewayConfig.setServices(currentServices);
+    }
+}
+
+
+/**
+     * Retrieves a list of service instances that are currently considered healthy
+     * by the HealthMonitor for a given service ID.
+     * This method is added to facilitate testing of the self-healing logic.
+     *
+     * @param serviceId The ID of the service to check.
+     * @return A list of healthy ServiceInstance objects. Returns an empty list if no healthy instances are found.
+     */
+    public List<GatewayConfig.ServiceInstance> getServiceActiveInstances(String serviceId) {
+        // Find the specific ServiceConfig by serviceId
+        Optional<GatewayConfig.ServiceConfig> serviceConfigOptional = config.getServices().stream()
+            .filter(s -> s.getId().equals(serviceId))
+            .findFirst();
+
+        if (serviceConfigOptional.isEmpty()) {
+            return Collections.emptyList(); // No such service found
+        }
+
+        GatewayConfig.ServiceConfig serviceConfig = serviceConfigOptional.get();
+
+        // Filter instances of this service based on their active status and HealthMonitor's health status
+        return serviceConfig.getInstances().stream()
+            .filter(instance -> instance.isActive() && healthMonitor.isServiceHealthy(instance.getId()))
+            .collect(Collectors.toList());
+    }
+
+    // ... (rest of your existing methods)
+}

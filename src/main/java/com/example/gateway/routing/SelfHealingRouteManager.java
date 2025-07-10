@@ -2,11 +2,13 @@ package com.example.gateway.routing;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.springframework.cloud.gateway.filter.GatewayFilter;
 import org.springframework.cloud.gateway.route.RouteLocator;
@@ -60,7 +62,7 @@ public class SelfHealingRouteManager {
         return routes.build();
     }
 
-    private GatewayFilter createSelfHealingFilter(GatewayConfig.ServiceConfig service) {
+    public GatewayFilter createSelfHealingFilter(GatewayConfig.ServiceConfig service) {
         return (exchange, chain) -> {
             String serviceID = service.getId();
             long startTime = System.currentTimeMillis();

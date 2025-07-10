@@ -72,4 +72,23 @@ public class GatewayManagementController {
 
         return Mono.just(response);
     }
+
+    @GetMapping("/routes")
+    public Mono<Map<String, Object>> getRoutes() {
+        Map<String, Object> response = new HashMap<>();
+        Map<String, Object> routes = new HashMap<>();
+
+        gatewayConfig.getServices().forEach(service -> {
+            Map<String, Object> routeInfo = new HashMap<>();
+            routeInfo.put("path", service.getPath());
+            routeInfo.put("fallbackStrategy", service.getFallbackStrategy());
+            routeInfo.put("priority", service.getPriority());
+            routeInfo.put("instances", service.getInstances().size());
+            routeInfo.put("activeInstances", service.getInstances().stream().mapToInt(i -> i.isActive() ? 1 : 0).sum());
+            routes.put(service.getId(), routeInfo);
+        });
+        response.put("routes", routes);
+        response.put("timestamp", java.time.LocalDateTime.now());
+        return Mono.just(response);
+    }
 }
