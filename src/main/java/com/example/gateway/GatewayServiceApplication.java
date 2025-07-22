@@ -16,6 +16,7 @@ public class GatewayServiceApplication {
 	public static void main(String[] args) {
 		SpringApplication.run(GatewayServiceApplication.class, args);
 	}
+
 	@Bean
 	public RouteLocator customRouteLocator(RouteLocatorBuilder builder, SelfHealingRouteManager routeManager) {
 		return routeManager.buildDynamicRoutes(builder);

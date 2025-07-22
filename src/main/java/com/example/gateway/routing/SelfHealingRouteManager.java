@@ -2,13 +2,11 @@ package com.example.gateway.routing;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 import org.springframework.cloud.gateway.filter.GatewayFilter;
 import org.springframework.cloud.gateway.route.RouteLocator;
@@ -39,11 +37,11 @@ public class SelfHealingRouteManager {
     private final ConcurrentHashMap<String, List<String>> activeRoutes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> requestCounter = new ConcurrentHashMap<>();
 
-    public SelfHealingRouteManager(GatewayConfig config, FailurePredictionEngine predictionEngine, HealthMonitor healthMonitor) {
+    public SelfHealingRouteManager(GatewayConfig config, FailurePredictionEngine predictionEngine, HealthMonitor healthMonitor, WebClient.Builder webClientBuilder) {
         this.config = config;
         this.predictionEngine = predictionEngine;
         this.healthMonitor = healthMonitor;
-        this.webClient = WebClient.builder().codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)).build();
+        this.webClient = webClientBuilder.codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)).build();
     }
 
     public RouteLocator buildDynamicRoutes(RouteLocatorBuilder builder) {
@@ -89,7 +87,7 @@ public class SelfHealingRouteManager {
         predictionEngine.recordMetric(serviceID, responseTime, success, cpuUsage, memoryUsage, activeConnections);
     }
 
-    private String selectHealthyInstance(GatewayConfig.ServiceConfig service) {
+    public String selectHealthyInstance(GatewayConfig.ServiceConfig service) {
         List<GatewayConfig.ServiceInstance> healthyInstances = service.getInstances().stream().filter(instance -> instance.isActive() && healthMonitor.isServiceHealthy(instance.getId())).toList();
 
         if (healthyInstances.isEmpty()) {
@@ -113,7 +111,7 @@ public class SelfHealingRouteManager {
             }
         }
 
-        return instances.get(0).getUrl();
+        return instances.getFirst().getUrl();
     }
 
     private Mono<Void> handleFailureWithRedirection(ServerWebExchange exchange, GatewayConfig.ServiceConfig service, int attemptCount) {
@@ -142,7 +140,11 @@ public class SelfHealingRouteManager {
             return null;
         }
 
-        int index = (requestCounter.get(service.getId()).getAndIncrement() + attemptCount) % healthyInstances.size();
+        AtomicInteger counter = requestCounter.computeIfAbsent(service.getId(), k -> {
+            return new AtomicInteger(0);
+        });
+
+        int index = (counter.getAndIncrement() + attemptCount) % healthyInstances.size();
 
         return healthyInstances.get(index).getUrl();
     }

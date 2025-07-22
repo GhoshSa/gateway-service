@@ -17,8 +17,8 @@ public class HealthMonitor {
     private final WebClient webClient;
     private final ConcurrentHashMap<String, ServiceHealth> serviceHealthMap;
 
-    public HealthMonitor() {
-        this.webClient = WebClient.builder().build();
+    public HealthMonitor(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder.build();
         this.serviceHealthMap = new ConcurrentHashMap<>();
     }
 
@@ -42,7 +42,7 @@ public class HealthMonitor {
     }
 
     private ServiceHealth getOrCreateHealth(String serviceID) {
-        return serviceHealthMap.computeIfAbsent(serviceID, k -> new ServiceHealth(k));
+        return serviceHealthMap.computeIfAbsent(serviceID, ServiceHealth::new);
     }
 
     public boolean isServiceHealthy(String serviceID) {
